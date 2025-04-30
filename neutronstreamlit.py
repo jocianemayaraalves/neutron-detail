@@ -1,156 +1,128 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
-from openpyxl import load_workbook
-import io
 
-# -------------------------
-# Classes POO e funções
-# -------------------------
+# Funções para carregar e manipular o Excel
+def load_excel(uploaded_file):
+    dfs = pd.read_excel(uploaded_file, sheet_name=None)
+    return dfs
+
+# Função para calcular a estimativa de produtos e custos
+def calcular_estimativa(servico, sujidade, produtos):
+    estimativa = {}
+    for produto in produtos:
+        if sujidade == 'Baixa':
+            estimativa[produto] = servico[produto]['Sujidade Baixa (ml)']
+        elif sujidade == 'Média':
+            estimativa[produto] = servico[produto]['Sujidade Média (ml)']
+        else:
+            estimativa[produto] = servico[produto]['Sujidade Alta (ml)']
+    return estimativa
+
+# Função para atualizar o estoque e histórico
+def atualizar_estoque(estoque, produtos_usados):
+    for produto, quantidade in produtos_usados.items():
+        estoque[produto]['Volume (ml)'] -= quantidade
+    return estoque
+
+def salvar_historico(historico, dados_lavagem):
+    historico.append(dados_lavagem)
+    return historico
+
+# Classe Produto
 class Produto:
-    def __init__(self, nome, volume_total_ml, preco_unitario_ml):
+    def __init__(self, nome, volume, preco):
         self.nome = nome
-        self.volume_total_ml = volume_total_ml
-        self.preco_unitario_ml = preco_unitario_ml
-        self.nivel_critico_frac = 0.05  # 5%
+        self.volume = volume
+        self.preco = preco
 
-    def usar(self, quantidade):
-        if quantidade > self.volume_total_ml:
-            raise ValueError(f"Estoque insuficiente para {self.nome}")
-        self.volume_total_ml -= quantidade
-
-    def em_nivel_critico(self):
-        return self.volume_total_ml <= self.nivel_critico_frac * self.volume_total_ml_initial
-
-    def set_initial(self):
-        # guardar volume inicial para cálculo de crítico
-        self.volume_total_ml_initial = self.volume_total_ml
-
+# Classe Estoque
 class Estoque:
-    def __init__(self, df_estoque):
+    def __init__(self):
         self.produtos = {}
-        for _, row in df_estoque.iterrows():
-            p = Produto(row['Produto'], row['Volume (ml)'], row['Preço Unitário (R$/ml)'])
-            p.set_initial()
-            self.produtos[p.nome] = p
 
-    def atualizar(self, nome, quantidade):
-        produto = self.produtos[nome]
-        produto.usar(quantidade)
-        if produto.volume_total_ml <= produto.nivel_critico_frac * produto.volume_total_ml_initial:
-            st.warning(f"⚠️ Estoque crítico de '{nome}': {produto.volume_total_ml} ml restante.")
+    def adicionar_produto(self, produto):
+        self.produtos[produto.nome] = produto
 
+    def obter_produto(self, nome_produto):
+        return self.produtos.get(nome_produto, None)
+
+# Classe Servico
 class Servico:
-    def __init__(self, nome, df_servicos):
+    def __init__(self, nome, produtos):
         self.nome = nome
-        df = df_servicos[df_servicos['Serviço'] == nome]
-        # pivot para dict de sujidade
-        self.parametros = {}
-        if not df.empty:
-            self.parametros = {
-                'Baixa': df['Sujidade Baixa (ml)'].values[0],
-                'Média': df['Sujidade Média (ml)'].values[0],
-                'Alta': df['Sujidade Alta (ml)'].values[0]
-            }
+        self.produtos = produtos
 
-    def estimativa_ml(self, nivel_sujidade):
-        return self.parametros.get(nivel_sujidade, 0)
+# Função principal do app
+def app():
+    # Carregar planilha
+    uploaded = st.file_uploader("Faça o upload da planilha Excel", type="xlsx")
+    if uploaded is not None:
+        dfs = load_excel(uploaded)
+        estoque_df = dfs["Estoque"]
+        servicos_df = dfs["Serviços"]
 
-class Carro:
-    def __init__(self, tamanho, sujidade):
-        self.tamanho = tamanho
-        self.sujidade = sujidade
+        # Criando os objetos de estoque
+        estoque = Estoque()
+        for index, row in estoque_df.iterrows():
+            produto = Produto(row['Produto'], row['Volume (ml)'], row['Preço Unitário (R$/ml)'])
+            estoque.adicionar_produto(produto)
 
-class Lavagem:
-    def __init__(self, carro, servico, estoque):
-        self.carro = carro
-        self.servico = servico
-        self.estoque = estoque
-        self.produtos_usados_reais = {}
-        self.timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Criando os serviços
+        servicos = {}
+        for index, row in servicos_df.iterrows():
+            servico = Servico(row['Serviço'], {
+                row['Produto']: {
+                    'Sujidade Baixa (ml)': row['Sujidade Baixa (ml)'],
+                    'Sujidade Média (ml)': row['Sujidade Média (ml)'],
+                    'Sujidade Alta (ml)': row['Sujidade Alta (ml)'],
+                }
+            })
+            servicos[row['Serviço']] = servico
 
-    def estimativa_custo(self):
-        # usar único produto por serviço
-        ml = self.servico.estimativa_ml(self.carro.sujidade)
-        prod = self.estoque.produtos[self.servico.nome_produto]
-        return ml * prod.preco_unitario_ml
+        # Seleção no app
+        servico_selecionado = st.selectbox("Selecione o serviço", list(servicos.keys()))
+        sujidade_selecionada = st.selectbox("Selecione o nível de sujidade", ["Baixa", "Média", "Alta"])
 
-    def registrar_uso(self, quantidade):
-        nome = self.servico.nome_produto
-        self.produtos_usados_reais[nome] = quantidade
-        self.estoque.atualizar(nome, quantidade)
+        if st.button("Calcular Estimativa"):
+            servico = servicos[servico_selecionado]
+            estimativa = calcular_estimativa(servico.produtos, sujidade_selecionada, servico.produtos)
+            st.write("Estimativa de produtos e custos:")
+            for produto, quantidade in estimativa.items():
+                st.write(f"{produto}: {quantidade} ml")
 
-    def comparar(self):
-        estimado = self.servico.estimativa_ml(self.carro.sujidade)
-        real = self.produtos_usados_reais.get(self.servico.nome_produto, 0)
-        custo_estimado = estimado * self.estoque.produtos[self.servico.nome_produto].preco_unitario_ml
-        custo_real = real * self.estoque.produtos[self.servico.nome_produto].preco_unitario_ml
-        return estimado, real, custo_estimado, custo_real
+            # Entrada de dados reais
+            produtos_usados = {}
+            for produto in estimativa:
+                quantidade_real = st.number_input(f"Qtd. Real usada de {produto} (ml):", min_value=0)
+                produtos_usados[produto] = quantidade_real
 
-# Função para salvar histórico no workbook em memória
-def salvar_historico(wb, lavagem):
-    if 'Histórico de Lavagens' not in wb.sheetnames:
-        ws = wb.create_sheet('Histórico de Lavagens')
-        ws.append(['Timestamp', 'Serviço', 'Sujidade', 'Estimado (ml)', 'Real (ml)', 'Custo Estimado (R$)', 'Custo Real (R$)'])
-    else:
-        ws = wb['Histórico de Lavagens']
-    est_ml, real_ml, est_c, real_c = lavagem.comparar()
-    ws.append([lavagem.timestamp, lavagem.servico.nome, lavagem.carro.sujidade, est_ml, real_ml, est_c, real_c])
+            if st.button("Salvar e atualizar estoque"):
+                estoque_atualizado = atualizar_estoque(estoque.produtos, produtos_usados)
+                st.write("Estoque atualizado:")
+                for produto, data in estoque_atualizado.items():
+                    st.write(f"{produto}: {data['Volume (ml)']} ml restantes")
 
-# -------------------------
-# Streamlit UI
-# -------------------------
-st.title("Neutron Detail - Controle de Lavagens")
+                # Salvar histórico
+                historico = []
+                dados_lavagem = {
+                    "Serviço": servico_selecionado,
+                    "Sujidade": sujidade_selecionada,
+                    "Estimativa": estimativa,
+                    "Produtos Usados": produtos_usados,
+                    "Estoque Atualizado": estoque_atualizado
+                }
+                historico = salvar_historico(historico, dados_lavagem)
+                st.write("Histórico de lavagens:")
+                st.write(historico)
 
-# Upload da planilha
-uploaded = st.file_uploader("Envie sua planilha Excel", type=['xlsx'])
-if uploaded:
-    # ler planilha
-dfs = load_excel = pd.read_excel(uploaded, sheet_name=None)
-    df_estoque = dfs['Estoque']
-    df_servicos = dfs['Serviços']
+        # Option to download updated Excel
+        if st.button("Baixar planilha atualizada"):
+            with pd.ExcelWriter("Planilha_Atualizada_NeutronDetail.xlsx", engine="openpyxl") as writer:
+                estoque_df.to_excel(writer, sheet_name="Estoque", index=False)
+                servicos_df.to_excel(writer, sheet_name="Serviços", index=False)
+                # Adicionar histórico em uma nova aba
+                pd.DataFrame(historico).to_excel(writer, sheet_name="Histórico", index=False)
+            st.write("Planilha atualizada foi gerada!")
 
-    # criar objetos
-    estoque = Estoque(df_estoque)
-   
-    # Seleção de serviço e carro
-    servico_nome = st.selectbox("Serviço", df_servicos['Serviço'].unique())
-    sujidade = st.selectbox("Nível de Sujidade", ['Baixa', 'Média', 'Alta'])
-
-    # instancia serviço com atributo produto associado
-    servico = Servico(servico_nome, df_servicos)
-    # mapear nome de produto usado = mesma coluna "Produto"
-    servico.nome_produto = df_servicos[df_servicos['Serviço'] == servico_nome]['Produto'].values[0]
-
-    carro = Carro(None, sujidade)
-
-    lavagem = Lavagem(carro, servico, estoque)
-
-    if st.button("Calcular Estimativa e Registrar Uso Real"):
-        # estimativa
-        est_ml = servico.estimativa_ml(sujidade)
-        st.write(f"Estimativa de uso: {est_ml} ml")
-        custo_est = est_ml * estoque.produtos[servico.nome_produto].preco_unitario_ml
-        st.write(f"Custo estimado: R$ {custo_est:.2f}")
-
-        # input real
-        real_ml = st.number_input("Quantidade real usada (ml)", min_value=0, value=int(est_ml))
-        lavagem.registrar_uso(real_ml)
-        est_ml, real_ml, est_c, real_c = lavagem.comparar()
-        st.success(f"Custo real: R$ {real_c:.2f}")
-
-        # salvar no histórico e preparar download
-        wb = load_workbook(uploaded)
-        salvar_historico(wb, lavagem)
-        # atualizar aba estoque
-        ws2 = wb['Estoque']
-        for idx, row in enumerate(df_estoque['Produto'], start=2):
-            ws2.cell(row=idx, column=2, value=estoque.produtos[row].volume_total_ml)
-        
-        # gerar bytes para download
-        stream = io.BytesIO()
-        wb.save(stream)
-        stream.seek(0)
-        st.download_button("Baixar planilha atualizada", data=stream, file_name="Dados_atualizados.xlsx")
-else:
-    st.info("Faça upload da planilha modelo para começar.")
+if __name__ == "__main__":
+    app()
